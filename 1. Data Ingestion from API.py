@@ -5,7 +5,7 @@ from airflow.providers.microsoft.azure.hooks.wasb import WasbHook
 from datetime import datetime
 import json
 import pandas as pd
-from io import StringIO
+from io import BytesIO
 
 # -----------------------------
 # Config
@@ -31,10 +31,13 @@ def transform_and_upload(**context):
     # Upload to OneLake (ADLS Gen2)
     hook = WasbHook(wasb_conn_id='azure_onelake_conn')
 
-    hook.load_string(
-        string_data=json_str,
+    buffer = BytesIO()
+    df.to_parquet(buffer, index=False)
+
+    hook.load_bytes(
+        bytes_data=buffer.getvalue(),
         container_name=ONELAKE_CONTAINER,
-        blob_name=ONELAKE_PATH,
+        blob_name="raw/api_data/data.parquet",
         overwrite=True
     )
 
