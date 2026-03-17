@@ -1,0 +1,69 @@
+from airflow import DAG
+from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.operators.python import PythonOperator
+from airflow.providers.microsoft.azure.hooks.wasb import WasbHook
+from datetime import datetime
+import json
+import pandas as pd
+from io import StringIO
+
+# -----------------------------
+# Config
+# -----------------------------
+API_ENDPOINT = "/v1/data"
+ONELAKE_CONTAINER = "mycontainer"
+ONELAKE_PATH = "raw/api_data/data.json"
+
+# -----------------------------
+# Transform function
+# -----------------------------
+def transform_and_upload(**context):
+    # Pull API response from XCom
+    response = context['ti'].xcom_pull(task_ids='extract_api_data')
+    data = json.loads(response)
+
+    # Example transformation: flatten JSON
+    df = pd.json_normalize(data)
+
+    # Convert to JSON string
+    json_str = df.to_json(orient='records', lines=True)
+
+    # Upload to OneLake (ADLS Gen2)
+    hook = WasbHook(wasb_conn_id='azure_onelake_conn')
+
+    hook.load_string(
+        string_data=json_str,
+        container_name=ONELAKE_CONTAINER,
+        blob_name=ONELAKE_PATH,
+        overwrite=True
+    )
+
+# -----------------------------
+# DAG definition
+# -----------------------------
+with DAG(
+    dag_id="api_to_onelake_ingestion",
+    start_date=datetime(2024, 1, 1),
+    schedule_interval="@daily",
+    catchup=False,
+    tags=["api", "onelake", "ingestion"],
+) as dag:
+
+    # 1. Extract from API
+    extract_api_data = SimpleHttpOperator(
+        task_id="extract_api_data",
+        http_conn_id="http_api_conn",
+        endpoint=API_ENDPOINT,
+        method="GET",
+        headers={"Content-Type": "application/json"},
+        log_response=True,
+    )
+
+    # 2. Transform + Load to OneLake
+    transform_and_load = PythonOperator(
+        task_id="transform_and_load",
+        python_callable=transform_and_upload,
+        provide_context=True,
+    )
+
+    extract_api_data >> transform_and_load
